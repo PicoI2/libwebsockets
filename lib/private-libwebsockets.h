@@ -521,6 +521,10 @@ enum lws_pending_protocol_send {
 
 enum lws_rx_parse_state {
 	LWS_RXPS_NEW,
+	
+	LWS_RXPS_SEEN_76_FF,
+	LWS_RXPS_PULLING_76_LENGTH,
+	LWS_RXPS_EAT_UNTIL_76_FF,
 
 	LWS_RXPS_04_mask_1,
 	LWS_RXPS_04_mask_2,
@@ -1947,6 +1951,8 @@ int lws_context_init_server(struct lws_context_creation_info *info,
 LWS_EXTERN struct lws_vhost *
 lws_select_vhost(struct lws_context *context, int port, const char *servername);
 LWS_EXTERN int
+handshake_00(struct lws_context *context, struct lws *wsi);
+LWS_EXTERN int
 handshake_0405(struct lws_context *context, struct lws *wsi);
 LWS_EXTERN int LWS_WARN_UNUSED_RESULT
 lws_interpret_incoming_packet(struct lws *wsi, unsigned char **buf, size_t len);
@@ -2263,6 +2269,8 @@ static inline uint64_t lws_stats_atomic_max(struct lws_context * context,
 /* socks */
 void socks_generate_msg(struct lws *wsi, enum socks_msg_type type,
 			size_t *msg_len);
+
+void MD5(const unsigned char *input, int ilen, unsigned char *output);
 
 #ifdef __cplusplus
 };

@@ -1654,6 +1654,13 @@ upgrade_ws:
 		 */
 
 		switch (wsi->ietf_spec_revision) {
+		case 0:
+			lwsl_parser("lws_parse calling handshake_00\n");
+			if (handshake_00(context, wsi)) {
+				lwsl_info("hs00 has failed the connection\n");
+				goto bail_nuke_ah;
+			}
+			break;
 		case 13:
 			lwsl_parser("lws_parse calling handshake_04\n");
 			if (handshake_0405(context, wsi)) {
@@ -2528,18 +2535,18 @@ LWS_VISIBLE int
 lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 		    const char *other_headers, int other_headers_len)
 {
-	static const char * const intermediates[] = { "private", "public" };
+	// static const char * const intermediates[] = { "private", "public" };
 	struct lws_context *context = lws_get_context(wsi);
 	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
 #if defined(LWS_WITH_RANGES)
 	struct lws_range_parsing *rp = &wsi->u.http.range;
 #endif
-	char cache_control[50], *cc = "no-store";
+	char cache_control[50];//  *cc = "no-store";
 	unsigned char *response = pt->serv_buf + LWS_PRE;
 	unsigned char *p = response;
 	unsigned char *end = p + context->pt_serv_buf_size - LWS_PRE;
 	lws_filepos_t computed_total_content_length;
-	int ret = 0, cclen = 8, n = HTTP_STATUS_OK;
+	int ret = 0, /*cclen = 8,*/ n = HTTP_STATUS_OK;
 	lws_fop_flags_t fflags = LWS_O_RDONLY;
 #if defined(LWS_WITH_RANGES)
 	int ranges;
@@ -2685,21 +2692,21 @@ lws_serve_http_file(struct lws *wsi, const char *file, const char *content_type,
 			return -1;
 	}
 
-	if (wsi->cache_secs && wsi->cache_reuse) {
-		if (wsi->cache_revalidate) {
-			cc = cache_control;
-			cclen = sprintf(cache_control, "%s max-age: %u",
-				    intermediates[wsi->cache_intermediaries],
-				    wsi->cache_secs);
-		} else {
-			cc = "no-cache";
-			cclen = 8;
-		}
-	}
+	// if (wsi->cache_secs && wsi->cache_reuse) {
+	// 	if (wsi->cache_revalidate) {
+	// 		cc = cache_control;
+	// 		cclen = sprintf(cache_control, "%s, max-age: %u",
+	// 			    intermediates[wsi->cache_intermediaries],
+	// 			    wsi->cache_secs);
+	// 	} else {
+	// 		cc = "no-cache";
+	// 		cclen = 8;
+	// 	}
+	// }
 
-	if (lws_add_http_header_by_token(wsi, WSI_TOKEN_HTTP_CACHE_CONTROL,
-			(unsigned char *)cc, cclen, &p, end))
-		return -1;
+	// if (lws_add_http_header_by_token(wsi, WSI_TOKEN_HTTP_CACHE_CONTROL,
+	// 		(unsigned char *)cc, cclen, &p, end))
+	// 	return -1;
 
 	if (wsi->u.http.connection_type == HTTP_CONNECTION_KEEP_ALIVE)
 		if (lws_add_http_header_by_token(wsi, WSI_TOKEN_CONNECTION,

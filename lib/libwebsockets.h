@@ -95,7 +95,7 @@ struct sockaddr_in;
 #define LWS_O_CREAT _O_CREAT
 #define LWS_O_TRUNC _O_TRUNC
 
-#if !defined(__MINGW32__) && (!defined(_MSC_VER) || _MSC_VER < 1900) /* Visual Studio 2015 already defines this in <stdio.h> */
+#if !defined(__MINGW32__) && (!defined(_MSC_VER) || _MSC_VER < 1500) /* Visual Studio 2015 already defines this in <stdio.h> */
 #define lws_snprintf _snprintf
 #endif
 
@@ -693,6 +693,7 @@ typedef int lws_filefd_type;
 #else
 #if defined(WIN32) || defined(_WIN32)
 /* !!! >:-[  */
+typedef unsigned __int64 uint64_t;
 typedef unsigned __int32 uint32_t;
 typedef unsigned __int16 uint16_t;
 typedef unsigned __int8 uint8_t;

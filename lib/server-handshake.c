@@ -22,6 +22,8 @@
 #include "private-libwebsockets.h"
 
 #define LWS_CPYAPP(ptr, str) { strcpy(ptr, str); ptr += strlen(str); }
+#define LWS_CPYAPP_TOKEN(ptr, tok) { strcpy(p,  lws_hdr_simple_ptr(wsi, tok)); \
+		p += lws_hdr_total_length(wsi, tok); }
 
 #ifndef LWS_NO_EXTENSIONS
 static int
@@ -224,6 +226,190 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 	return 0;
 }
 #endif
+
+static int
+interpret_key(const char *key, unsigned long *result)
+{
+	char digits[20];
+	int digit_pos = 0;
+	const char *p = key;
+	unsigned int spaces = 0;
+	unsigned long acc = 0;
+	int rem = 0;
+
+	while (*p) {
+		if (!isdigit(*p)) {
+			p++;
+			continue;
+		}
+		if (digit_pos == sizeof(digits) - 1)
+			return -1;
+		digits[digit_pos++] = *p++;
+	}
+	digits[digit_pos] = '\0';
+	if (!digit_pos)
+		return -2;
+
+	while (*key) {
+		if (*key == ' ')
+			spaces++;
+		key++;
+	}
+
+	if (!spaces)
+		return -3;
+
+	p = &digits[0];
+	while (*p) {
+		rem = (rem * 10) + ((*p++) - '0');
+		acc = (acc * 10) + (rem / spaces);
+		rem -= (rem / spaces) * spaces;
+	}
+
+	if (rem) {
+		lwsl_warn("nonzero handshake remainder\n");
+		return -1;
+	}
+
+	*result = acc;
+
+	return 0;
+}
+
+// Repris d'un ancienne version de la librairie, puis modifié pour être compatible avec la version draft76 des websockets (aka hixie76)
+// Détail : https://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-76
+int handshake_00(struct lws_context *context, struct lws *wsi)
+{
+	unsigned long key1, key2;
+	unsigned char sum[16];
+	char *response;
+	char *p;
+	int n;
+
+   /* Confirm we have all the necessary pieces */
+
+	if (!lws_hdr_total_length(wsi, WSI_TOKEN_ORIGIN) ||
+		!lws_hdr_total_length(wsi, WSI_TOKEN_HOST) ||
+		!lws_hdr_total_length(wsi, WSI_TOKEN_CHALLENGE) ||
+		!lws_hdr_total_length(wsi, WSI_TOKEN_KEY1) ||
+		!lws_hdr_total_length(wsi, WSI_TOKEN_KEY2))
+		/* completed header processing, but missing some bits */
+		goto bail;
+
+	/* allocate the per-connection user memory (if any) */
+	if (wsi->protocol->per_session_data_size &&
+					  !lws_ensure_user_space(wsi))
+		goto bail;
+
+	/* create the response packet */
+
+	/* make a buffer big enough for everything */
+
+	response = (char *)malloc(256 +
+		lws_hdr_total_length(wsi, WSI_TOKEN_UPGRADE) +
+		lws_hdr_total_length(wsi, WSI_TOKEN_CONNECTION) +
+		lws_hdr_total_length(wsi, WSI_TOKEN_HOST) +
+		lws_hdr_total_length(wsi, WSI_TOKEN_ORIGIN) +
+		lws_hdr_total_length(wsi, WSI_TOKEN_GET_URI) +
+		lws_hdr_total_length(wsi, WSI_TOKEN_PROTOCOL));
+		
+	if (!response) {
+		lwsl_err("Out of memory for response buffer\n");
+		goto bail;
+	}
+
+	p = response;
+	LWS_CPYAPP(p, "HTTP/1.1 101 WebSocket Protocol Handshake\x0d\x0a"
+		      "Upgrade: WebSocket\x0d\x0a"
+		      "Connection: Upgrade\x0d\x0a"
+		      "Sec-WebSocket-Origin: ");
+	strcpy(p, lws_hdr_simple_ptr(wsi, WSI_TOKEN_ORIGIN));
+	p += lws_hdr_total_length(wsi, WSI_TOKEN_ORIGIN);
+#ifdef LWS_OPENSSL_SUPPORT
+	if (wsi->ssl) {
+		LWS_CPYAPP(p, "\x0d\x0aSec-WebSocket-Location: wss://");
+	} else {
+		LWS_CPYAPP(p, "\x0d\x0aSec-WebSocket-Location: ws://");
+	}
+#else
+	LWS_CPYAPP(p, "\x0d\x0aSec-WebSocket-Location: ws://");
+#endif
+
+	LWS_CPYAPP_TOKEN(p, WSI_TOKEN_HOST);
+	LWS_CPYAPP_TOKEN(p, WSI_TOKEN_GET_URI);
+
+	if (lws_hdr_total_length(wsi, WSI_TOKEN_PROTOCOL)) {
+		LWS_CPYAPP(p, "\x0d\x0aSec-WebSocket-Protocol: ");
+		LWS_CPYAPP_TOKEN(p, WSI_TOKEN_PROTOCOL);
+	}
+
+	LWS_CPYAPP(p, "\x0d\x0a\x0d\x0a");
+
+	/* convert the two keys into 32-bit integers */
+	if (interpret_key(lws_hdr_simple_ptr(wsi, WSI_TOKEN_KEY1), &key1))
+		goto bail;
+	if (interpret_key(lws_hdr_simple_ptr(wsi, WSI_TOKEN_KEY2), &key2))
+		goto bail;
+
+	/* lay them out in network byte order (MSB first */
+
+	sum[0] = (unsigned char)(key1 >> 24);
+	sum[1] = (unsigned char)(key1 >> 16);
+	sum[2] = (unsigned char)(key1 >> 8);
+	sum[3] = (unsigned char)(key1);
+	sum[4] = (unsigned char)(key2 >> 24);
+	sum[5] = (unsigned char)(key2 >> 16);
+	sum[6] = (unsigned char)(key2 >> 8);
+	sum[7] = (unsigned char)(key2);
+
+	/* follow them with the challenge token we were sent */
+	memcpy(&sum[8], lws_hdr_simple_ptr(wsi, WSI_TOKEN_CHALLENGE), 8);
+
+	/*
+	 * compute the md5sum of that 16-byte series and use as our
+	 * payload after our headers
+	 */
+
+	MD5(sum, 16, (unsigned char *)p);
+	p += 16;
+
+	/* it's complete: go ahead and send it */
+
+	lwsl_parser("issuing response packet %d len\n", (int)(p - response));
+#ifdef _DEBUG
+	fwrite(response, 1,  p - response, stderr);
+#endif
+	n = lws_write(wsi, (unsigned char *)response,
+					  p - response, LWS_WRITE_HTTP);
+	if (n < 0) {
+		lwsl_debug("handshake_00: ERROR writing to socket\n");
+		goto bail;
+	}
+
+	/* alright clean up and set ourselves into established state */
+
+	free(response);
+	wsi->state = LWSS_ESTABLISHED;
+	wsi->lws_rx_parse_state = LWS_RXPS_NEW;
+
+	{
+		const char * uri_ptr =
+			lws_hdr_simple_ptr(wsi, WSI_TOKEN_GET_URI);
+		int uri_len = lws_hdr_total_length(wsi, WSI_TOKEN_GET_URI);
+		const struct lws_http_mount *hit =
+			lws_find_mount(wsi, uri_ptr, uri_len);
+		if (hit && hit->cgienv &&
+		    wsi->protocol->callback(wsi, LWS_CALLBACK_HTTP_PMO,
+			wsi->user_space, (void *)hit->cgienv, 0))
+			return 1;
+	}
+
+	return 0;
+
+bail:
+	return -1;
+}
+
 int
 handshake_0405(struct lws_context *context, struct lws *wsi)
 {

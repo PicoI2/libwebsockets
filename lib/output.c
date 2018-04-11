@@ -243,6 +243,8 @@ LWS_VISIBLE int lws_write(struct lws *wsi, unsigned char *buf, size_t len,
 			  enum lws_write_protocol wp)
 {
 	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+	int post = 0;
+	int shift = 7;
 	int masked7 = (wsi->mode == LWSCM_WS_CLIENT);
 	unsigned char is_masked_bit = 0;
 	unsigned char *dropmask = NULL;
@@ -408,6 +410,37 @@ LWS_VISIBLE int lws_write(struct lws *wsi, unsigned char *buf, size_t len,
 	len = eff_buf.token_len;
 
 	switch (wsi->ietf_spec_revision) {
+	case 0:
+		if ((wp & 0xf) == LWS_WRITE_BINARY) {
+			/* in binary mode we send 7-bit used length blocks */
+			pre = 1;
+			while (len & (127 << shift)) {
+				pre++;
+				shift += 7;
+			}
+			n = 0;
+			shift -= 7;
+			while (shift >= 0) {
+				if (shift)
+					buf[0 - pre + n] =
+						  ((len >> shift) & 127) | 0x80;
+				else
+					buf[0 - pre + n] =
+						  ((len >> shift) & 127);
+				n++;
+				shift -= 7;
+			}
+			break;
+		}
+
+		/* frame type = text, length-free spam mode */
+
+		pre = 1;
+		buf[-pre] = 0;
+		buf[len] = 0xff; /* EOT marker */
+		post = 1;
+		break;
+
 	case 13:
 		if (masked7) {
 			pre += 4;
@@ -547,7 +580,7 @@ send_raw:
 					wsi->u.http2.my_stream_id, len, buf);
 		}
 #endif
-		return lws_issue_raw(wsi, (unsigned char *)buf - pre, len + pre);
+		return lws_issue_raw(wsi, (unsigned char *)buf - pre, len + pre + post);
 	default:
 		break;
 	}
@@ -571,12 +604,12 @@ send_raw:
 	 * return to the user code how much OF THE USER BUFFER was consumed.
 	 */
 
-	n = lws_issue_raw_ext_access(wsi, buf - pre, len + pre);
+	n = lws_issue_raw_ext_access(wsi, buf - pre, len + pre + post);
 	wsi->u.ws.inside_frame = 1;
 	if (n <= 0)
 		return n;
 
-	if (n == (int)len + pre) {
+	if (n == (int)len + pre + post) {
 		/* everything in the buffer was handled (or rebuffered...) */
 		wsi->u.ws.inside_frame = 0;
 		return orig_len;
@@ -824,7 +857,7 @@ lws_ssl_capable_write_no_ssl(struct lws *wsi, unsigned char *buf, int len)
 
 #if LWS_POSIX
 	n = send(wsi->desc.sockfd, (char *)buf, len, MSG_NOSIGNAL);
-//	lwsl_info("%s: sent len %d result %d", __func__, len, n);
+	lwsl_info("%s: sent len %d result %d", __func__, len, n);
 	if (n >= 0)
 		return n;
 

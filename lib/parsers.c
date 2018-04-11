@@ -836,10 +836,33 @@ check_eol:
 			wsi->u.hdr.parser_state = WSI_TOKEN_SKIPPING;
 
 swallow:
-		/* per-protocol end of headers management */
+
+		// Re-add compatibility with draft76
+		// WSI_TOKEN_KEY1 is not null only in draft76
+
+		/* -76 has no version header ... server */
+		if (lws_hdr_total_length(wsi, WSI_TOKEN_KEY1) &&
+		   !lws_hdr_total_length(wsi, WSI_TOKEN_VERSION) &&
+		   wsi->mode != LWSCM_WSCL_WAITING_SERVER_REPLY &&
+			      lws_hdr_total_length(wsi, wsi->u.hdr.parser_state) != 8)
+		{
+			break;
+		}
+
+		/* -76 has no version header ... client */
+		if (lws_hdr_total_length(wsi, WSI_TOKEN_KEY1) &&
+		   !lws_hdr_total_length(wsi, WSI_TOKEN_VERSION) &&
+		   wsi->mode == LWSCM_WSCL_WAITING_SERVER_REPLY &&
+			lws_hdr_total_length(wsi, wsi->u.hdr.parser_state) != 16)
+		{
+			break;
+		}
 
 		if (wsi->u.hdr.parser_state == WSI_TOKEN_CHALLENGE)
+		{
+			lwsl_parser("header completed\n");
 			goto set_parsing_complete;
+		}
 		break;
 
 		/* collecting and checking a name part */
@@ -921,9 +944,11 @@ swallow:
 				wsi->u.hdr.current_token_limit =
 					wsi->context->max_http_header_data;
 
-			if (wsi->u.hdr.parser_state == WSI_TOKEN_CHALLENGE)
+			if ((lws_hdr_total_length(wsi, WSI_TOKEN_VERSION) || !lws_hdr_total_length(wsi, WSI_TOKEN_KEY1)) 
+			    && wsi->u.hdr.parser_state == WSI_TOKEN_CHALLENGE)
+			{
 				goto set_parsing_complete;
-
+			}
 			goto start_fragment;
 		}
 		break;
@@ -1058,6 +1083,7 @@ lws_rx_sm(struct lws *wsi, unsigned char c)
 	int callback_action = LWS_CALLBACK_RECEIVE;
 	int ret = 0, n, rx_draining_ext = 0;
 	struct lws_tokens eff_buf;
+	unsigned char buf[20 + 4];
 
 	eff_buf.token = NULL;
 	eff_buf.token_len = 0;
@@ -1076,6 +1102,15 @@ lws_rx_sm(struct lws *wsi, unsigned char c)
 			goto drain_extension;
 		}
 		switch (wsi->ietf_spec_revision) {
+		case 0:
+			if (c == 0xff)
+				wsi->lws_rx_parse_state = LWS_RXPS_SEEN_76_FF;
+			if (c == 0) {
+				wsi->lws_rx_parse_state =
+						       LWS_RXPS_EAT_UNTIL_76_FF;
+				wsi->u.ws.rx_ubuf_head = 0;
+			}
+			break;
 		case 13:
 			/*
 			 * no prepended frame key any more
@@ -1322,6 +1357,45 @@ handle_first:
 		}
 		break;
 
+    case LWS_RXPS_EAT_UNTIL_76_FF:
+		if (c == 0xff) {
+			wsi->lws_rx_parse_state = LWS_RXPS_NEW;
+			goto issue;
+		}
+		wsi->u.ws.rx_ubuf[LWS_SEND_BUFFER_PRE_PADDING +
+					      (wsi->u.ws.rx_ubuf_head++)] = c;
+
+		// if (wsi->u.ws.rx_ubuf_head != MAX_USER_RX_BUFFER)
+		// 	break;
+issue:
+		// if (wsi->protocol->callback)
+		// {
+		// 	lws_ext_cb_active(wsi, LWS_CALLBACK_CLIENT_RECEIVE,
+		// 			      &wsi->u.ws.rx_ubuf[LWS_SEND_BUFFER_PRE_PADDING],
+		// 				  wsi->u.ws.rx_ubuf_head);
+		// }
+			
+		wsi->u.ws.rx_ubuf_head = 0;
+		break;
+	case LWS_RXPS_SEEN_76_FF:
+		if (c)
+			break;
+
+		lwsl_parser("Seen that client is requesting "
+				"a v76 close, sending ack\n");
+		buf[0] = 0xff;
+		buf[1] = 0;
+		n = lws_write(wsi, buf, 2, LWS_WRITE_HTTP);
+		if (n < 0) {
+			lwsl_warn("LWS_RXPS_SEEN_76_FF: ERROR writing to socket\n");
+			return -1;
+		}
+		lwsl_parser("  v76 close ack sent, server closing skt\n");
+		/* returning < 0 will get it closed in parent */
+		return -1;
+
+	case LWS_RXPS_PULLING_76_LENGTH:
+		break;
 
 	case LWS_RXPS_PAYLOAD_UNTIL_LENGTH_EXHAUSTED:
 		assert(wsi->u.ws.rx_ubuf);
@@ -1334,7 +1408,7 @@ handle_first:
 			lwsl_err("Attempted overflow \n");
 			return -1;
 		}
-		if (wsi->u.ws.all_zero_nonce)
+		if (wsi->ietf_spec_revision < 4 || wsi->u.ws.all_zero_nonce)
 			wsi->u.ws.rx_ubuf[LWS_PRE +
 					 (wsi->u.ws.rx_ubuf_head++)] = c;
 		else

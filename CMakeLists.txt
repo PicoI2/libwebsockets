@@ -6,6 +6,8 @@ endif()
 
 project(libwebsockets C)
 
+set (LWS_WITH_SHARED OFF)
+
 set(PACKAGE "libwebsockets")
 set(CPACK_PACKAGE_NAME "${PACKAGE}")
 set(CPACK_PACKAGE_VERSION_MAJOR "2")
@@ -596,6 +598,7 @@ endif()
 
 if (NOT LWS_WITHOUT_BUILTIN_SHA1)
 	list(APPEND SOURCES
+		lib/md5.c
 		lib/sha-1.c)
 endif()
 
