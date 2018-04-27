@@ -1357,25 +1357,13 @@ handle_first:
 		}
 		break;
 
-    case LWS_RXPS_EAT_UNTIL_76_FF:
+	case LWS_RXPS_EAT_UNTIL_76_FF:
 		if (c == 0xff) {
 			wsi->lws_rx_parse_state = LWS_RXPS_NEW;
-			goto issue;
+			goto spill;
 		}
 		wsi->u.ws.rx_ubuf[LWS_SEND_BUFFER_PRE_PADDING +
 					      (wsi->u.ws.rx_ubuf_head++)] = c;
-
-		// if (wsi->u.ws.rx_ubuf_head != MAX_USER_RX_BUFFER)
-		// 	break;
-issue:
-		// if (wsi->protocol->callback)
-		// {
-		// 	lws_ext_cb_active(wsi, LWS_CALLBACK_CLIENT_RECEIVE,
-		// 			      &wsi->u.ws.rx_ubuf[LWS_SEND_BUFFER_PRE_PADDING],
-		// 				  wsi->u.ws.rx_ubuf_head);
-		// }
-			
-		wsi->u.ws.rx_ubuf_head = 0;
 		break;
 	case LWS_RXPS_SEEN_76_FF:
 		if (c)
@@ -1673,7 +1661,7 @@ lws_payload_until_length_exhausted(struct lws *wsi, unsigned char **buf,
 
 	avail--;
 	rx_ubuf = wsi->u.ws.rx_ubuf + LWS_PRE + wsi->u.ws.rx_ubuf_head;
-	if (wsi->u.ws.all_zero_nonce)
+	if (wsi->u.ws.all_zero_nonce || wsi->ietf_spec_revision < 4)
 		memcpy(rx_ubuf, buffer, avail);
 	else {
 
